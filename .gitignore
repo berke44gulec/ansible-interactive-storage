@@ -1,0 +1,16 @@
+# Ansible
+*.retry
+*.log
+inventory/
+.ansible/
+
+# Temporary / Backup files created by playbooks
+*.backup.*
+/tmp/lvm_expansion_*.txt
+/tmp/mount_operation_*.txt
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+.DS_Store
