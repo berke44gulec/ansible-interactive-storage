@@ -1,0 +1,109 @@
+---
+- name: Format and Unmount Disk
+  hosts: localhost
+  become: yes
+  vars_prompt:
+    - name: operation
+      prompt: |
+        ⚠️  DANGER - DATA LOSS ⚠️
+        1) Unmount only
+        2) Format partition
+        3) Wipe entire disk
+        Choose (1-3)
+      default: "1"
+      private: no
+      
+  tasks:
+    - name: Show current mounts
+      shell: |
+        echo "=== MOUNTED DEVICES ==="
+        mount | grep "^/dev"
+        echo "=== ALL DISKS ==="
+        lsblk
+      register: disk_info
+      changed_when: false
+      
+    - name: Display disk info
+      debug:
+        msg: "{{ disk_info.stdout_lines }}"
+
+    # --- UNMOUNT OPERATION ---
+    - name: Unmount device
+      block:
+        - name: Get device to unmount
+          pause:
+            prompt: "Device to unmount (e.g., /dev/sdb1)"
+          register: umount_device
+          
+        - name: Unmount
+          mount:
+            path: "{{ item.mount }}"
+            state: unmounted
+          loop: "{{ ansible_mounts }}"
+          when: item.device == umount_device.user_input
+      when: operation == "1"
+      
+    # --- FORMAT PARTITION OPERATION ---
+    - name: Format partition
+      block:
+        - name: Get device to format
+          pause:
+            prompt: "⚠️  Device to FORMAT (e.g., /dev/sdb1) - DATA WILL BE LOST!"
+          register: format_device
+
+        # SAFETY CHECK
+        - name: Safety Check - Prevent System Disk Format
+          fail:
+            msg: "SAFETY ABORT: You are trying to format a system disk or active root partition!"
+          when: 
+            - format_device.user_input is defined
+            - (format_device.user_input in ['/dev/sda', '/dev/vda', '/dev/nvme0n1']) or (format_device.user_input == '/')
+          
+        - name: Get filesystem type
+          pause:
+            prompt: "Filesystem (ext4/xfs/ntfs)"
+            default: "ext4"
+          register: fs_type
+          
+        - name: Final confirmation
+          pause:
+            prompt: "Type 'DESTROY' to confirm formatting {{ format_device.user_input }}"
+          register: destroy_confirm
+          
+        - name: Format device
+          filesystem:
+            fstype: "{{ fs_type.user_input }}"
+            dev: "{{ format_device.user_input }}"
+            force: yes
+          when: destroy_confirm.user_input == "DESTROY"
+      when: operation == "2"
+      
+    # --- WIPE DISK OPERATION ---
+    - name: Wipe entire disk
+      block:
+        - name: Get disk to wipe
+          pause:
+            prompt: "⚠️  DISK to COMPLETELY WIPE (e.g., /dev/sdb) - ALL DATA LOST!"
+          register: wipe_disk
+
+        # SAFETY CHECK
+        - name: Safety Check - Prevent System Disk Wipe
+          fail:
+            msg: "SAFETY ABORT: You are trying to wipe a system disk!"
+          when: 
+            - wipe_disk.user_input is defined
+            - wipe_disk.user_input in ['/dev/sda', '/dev/vda', '/dev/nvme0n1']
+          
+        - name: Final confirmation
+          pause:
+            prompt: "Type 'DESTROY EVERYTHING' to wipe {{ wipe_disk.user_input }}"
+          register: wipe_confirm
+          
+        - name: Wipe and partition
+          shell: |
+            wipefs -af {{ wipe_disk.user_input }}
+            parted -s {{ wipe_disk.user_input }} mklabel gpt
+            parted -s {{ wipe_disk.user_input }} mkpart primary 0% 100%
+            mkfs.ext4 -F {{ wipe_disk.user_input }}1
+          when: wipe_confirm.user_input == "DESTROY EVERYTHING"
+      when: operation == "3"

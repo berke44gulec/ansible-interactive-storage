@@ -1,0 +1,125 @@
+---
+- name: Increase LVM Volume - Advanced LVM Expansion
+  hosts: localhost
+  gather_facts: yes
+  become: yes
+  vars_prompt:
+    - name: expansion_type
+      prompt: |
+        Select LVM expansion type:
+        1) Extend existing LV using available VG space
+        2) Add new disk to existing VG, then extend LV
+        3) Create new VG with new disk (Cross-VG Setup)
+        4) Show expansion possibilities (Safe Analysis)
+        Enter choice (1-4)
+      default: "4"
+      private: no
+    - name: target_vg
+      prompt: "Enter target Volume Group name (leave empty to list available VGs)"
+      private: no
+      when: expansion_type in ['1', '2', '3']
+    - name: target_lv
+      prompt: "Enter Logical Volume name to expand"
+      private: no
+      when: expansion_type in ['1', '2', '3'] and target_vg != ""
+    - name: new_disk
+      prompt: "Enter new disk device (e.g., /dev/sdc)"
+      private: no
+      when: expansion_type in ['2', '3']
+    - name: expansion_size
+      prompt: |
+        Enter expansion amount (e.g., +10G, +100%FREE):
+        Leave empty to use all available space.
+      private: no
+      when: expansion_type in ['1', '2', '3'] and target_vg != ""
+
+  tasks:
+    - name: Validate expansion type
+      fail:
+        msg: "Invalid expansion type. Please choose 1-4."
+      when: expansion_type not in ['1', '2', '3', '4']
+
+    - name: Verify Root Privileges
+      fail:
+        msg: "LVM operations require root privileges"
+      when: ansible_user_id != "root"
+
+    # --- OPTION 4: ANALYSIS ---
+    - name: Show expansion possibilities
+      block:
+        - name: Analyze current LVM setup
+          shell: |
+            echo "=== LVM EXPANSION ANALYSIS ==="
+            echo "--- VOLUME GROUPS ---"
+            vgs -o vg_name,vg_size,vg_free || echo "No VGs found"
+            echo ""
+            echo "--- DISKS AVAILABLE ---"
+            lsblk -dn -o NAME,SIZE | grep -vE 'sda|vda' || echo "No extra disks found"
+          register: expansion_analysis
+          changed_when: false
+
+        - name: Display analysis
+          debug:
+            msg: "{{ expansion_analysis.stdout_lines }}"
+          
+        - name: End play
+          meta: end_play
+      when: expansion_type == '4'
+
+    # --- PRE-CHECKS ---
+    - name: List available VGs if not specified
+      shell: vgs
+      register: avail_vgs
+      changed_when: false
+      when: target_vg == ""
+
+    - name: Display VGs and Exit
+      block:
+        - debug: msg="{{ avail_vgs.stdout_lines }}"
+        - meta: end_play
+      when: target_vg == ""
+
+    # --- OPTION 1: EXTEND EXISTING ---
+    - name: Extend LV using existing VG space
+      block:
+        - name: Extend Logical Volume
+          lvol:
+            vg: "{{ target_vg }}"
+            lv: "{{ target_lv }}"
+            size: "{{ expansion_size if expansion_size != '' else '+100%FREE' }}"
+            resizefs: yes
+          register: lv_result
+
+        - name: Display Result
+          debug:
+            msg: "LV Extended successfully. New Size: {{ lv_result.size | default('Unknown') }}"
+      when: expansion_type == '1'
+
+    # --- OPTION 2: ADD DISK AND EXTEND ---
+    - name: Add new disk and extend
+      block:
+        - name: Create PV and Extend VG
+          community.general.lvg:
+            vg: "{{ target_vg }}"
+            pvs: "{{ new_disk }}"
+            pv_options: '--force'
+        
+        - name: Extend LV
+          lvol:
+            vg: "{{ target_vg }}"
+            lv: "{{ target_lv }}"
+            size: "{{ expansion_size if expansion_size != '' else '+100%FREE' }}"
+            resizefs: yes
+      when: expansion_type == '2'
+
+    # --- REPORTING ---
+    - name: Final Status Report
+      shell: |
+        echo "=== FINAL STATUS ==="
+        lvs {{ target_vg }}/{{ target_lv }} -o lv_name,lv_size
+        df -h | grep {{ target_vg }}
+      register: final_report
+      changed_when: false
+      ignore_errors: yes
+
+    - debug: msg="{{ final_report.stdout_lines }}"

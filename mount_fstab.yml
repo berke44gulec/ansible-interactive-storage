@@ -1,0 +1,129 @@
+---
+- name: Mount Filesystem and Add to /etc/fstab - Interactive Mount Manager
+  hosts: localhost
+  gather_facts: yes
+  become: yes
+  vars_prompt:
+    - name: target_device
+      prompt: |
+        Enter the device to mount (e.g., /dev/sdb1, /dev/mapper/vg-lv):
+        (Leave empty to list available unmounted devices first)
+      private: no
+    - name: mount_point
+      prompt: "Enter mount point path (e.g., /data, /backup)"
+      private: no
+      when: target_device != ""
+    - name: filesystem_type
+      prompt: |
+        Enter filesystem type:
+        1) auto (detect automatically)
+        2) ext4
+        3) xfs
+        4) btrfs
+        5) ntfs
+        6) vfat
+        Enter choice (1-6) or custom type
+      default: "1"
+      private: no
+      when: target_device != ""
+    - name: mount_options
+      prompt: "Enter mount options (defaults, rw,noatime, etc.) or press Enter for 'defaults'"
+      default: "defaults"
+      private: no
+      when: target_device != ""
+    - name: add_to_fstab
+      prompt: "Add to /etc/fstab for permanent mounting? (y/n)"
+      default: "y"
+      private: no
+      when: target_device != ""
+
+  tasks:
+    - name: Display available unmounted devices if no device specified
+      block:
+        - name: Get unmounted devices
+          shell: |
+            echo "Available unmounted block devices:"
+            echo "=================================="
+            lsblk -f -o NAME,SIZE,FSTYPE,UUID,LABEL | grep -E "^[├└].*" | grep -v -E "\s/\s|\sSWAP\s" || echo "No unmounted devices found"
+          register: unmounted_devices
+          changed_when: false
+
+        - name: Display unmounted devices
+          debug:
+            msg: "{{ unmounted_devices.stdout_lines }}"
+
+        - name: Exit if no device specified
+          meta: end_play
+      when: target_device == ""
+
+    - name: Validate inputs
+      block:
+        - name: Check if device exists
+          stat:
+            path: "{{ target_device }}"
+          register: device_stat
+          failed_when: not device_stat.stat.exists
+
+        - name: Check if mount point path is valid
+          fail:
+            msg: "Mount point must be an absolute path starting with /"
+          when: not mount_point.startswith('/')
+
+        - name: Convert filesystem type choice
+          set_fact:
+            fs_type: "{{ 'auto' if filesystem_type == '1' else 'ext4' if filesystem_type == '2' else 'xfs' if filesystem_type == '3' else 'btrfs' if filesystem_type == '4' else 'ntfs' if filesystem_type == '5' else 'vfat' if filesystem_type == '6' else filesystem_type }}"
+
+    - name: Pre-mount safety checks
+      block:
+        - name: Check if device is already mounted
+          shell: mount | grep "{{ target_device }}"
+          register: already_mounted
+          failed_when: false
+          changed_when: false
+
+        - name: Fail if device already mounted
+          fail:
+            msg: "Device {{ target_device }} is already mounted!"
+          when: already_mounted.rc == 0
+
+    - name: Create mount point directory
+      file:
+        path: "{{ mount_point }}"
+        state: directory
+        mode: '0755'
+
+    - name: Backup current /etc/fstab
+      copy:
+        src: /etc/fstab
+        dest: "/etc/fstab.backup.{{ ansible_date_time.epoch }}"
+        backup: yes
+      when: add_to_fstab == "y"
+
+    - name: Perform Persistent Mount (adds to fstab)
+      mount:
+        path: "{{ mount_point }}"
+        src: "{{ target_device }}"
+        fstype: "{{ fs_type }}"
+        opts: "{{ mount_options }}"
+        state: mounted
+      when: add_to_fstab == "y"
+      register: persistent_mount_result
+
+    - name: Perform Temporary Mount (does NOT add to fstab)
+      command: "mount -t {{ fs_type }} -o {{ mount_options }} {{ target_device }} {{ mount_point }}"
+      when: add_to_fstab != "y"
+      register: temp_mount_result
+      changed_when: true
+
+    - name: Verify mount
+      shell: mountpoint "{{ mount_point }}"
+      register: mount_verification
+      changed_when: false
+
+    - name: Display Success Message
+      debug:
+        msg: 
+          - "Mount Operation Successful!"
+          - "Device: {{ target_device }}"
+          - "Mount Point: {{ mount_point }}"
+          - "Persistence: {{ 'Enabled (Added to fstab)' if add_to_fstab == 'y' else 'Disabled (Temporary)' }}"

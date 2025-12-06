@@ -1,0 +1,28 @@
+---
+- name: Scan and List Disks
+  hosts: localhost
+  become: yes
+  vars_prompt:
+    - name: rescan
+      prompt: "Rescan for new disks? (y/n)"
+      default: "n"
+      private: no
+      
+  tasks:
+    - name: Rescan SCSI bus
+      shell: echo "- - -" > /sys/class/scsi_host/host0/scan
+      when: rescan == "y"
+      ignore_errors: yes
+      
+    - name: List all disks
+      shell: |
+        echo "=== ALL DISKS ==="
+        lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT
+        echo ""
+        echo "=== UNPARTITIONED CANDIDATES ==="
+        lsblk -dn -o NAME,SIZE,TYPE | grep disk
+      register: disk_scan
+      changed_when: false
+      
+    - debug:
+        msg: "{{ disk_scan.stdout_lines }}"

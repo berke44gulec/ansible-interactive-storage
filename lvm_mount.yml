@@ -1,0 +1,79 @@
+---
+- name: LVM Mount Operations
+  hosts: localhost
+  become: yes
+  vars_prompt:
+    - name: operation
+      prompt: |
+        LVM Operations:
+        1) Show LVM status
+        2) Mount existing LV
+        3) Create new LV and Mount
+        Choose (1-3)
+      default: "1"
+      private: no
+      
+  tasks:
+    - name: Show LVM status
+      shell: |
+        echo "=== PVs ==="; pvs
+        echo "=== VGs ==="; vgs
+        echo "=== LVs ==="; lvs
+      register: lvm_status
+      changed_when: false
+      when: operation == "1"
+      
+    - debug: msg="{{ lvm_status.stdout_lines }}"
+      when: operation == "1"
+      
+    - name: Mount existing LV
+      block:
+        - name: Get LV info
+          pause:
+            prompt: "Enter VG/LV (e.g., vg0/data)"
+          register: lv_input
+          
+        - name: Get mount point
+          pause:
+            prompt: "Mount point (e.g., /data)"
+          register: mount_input
+          
+        - name: Mount LV
+          mount:
+            path: "{{ mount_input.user_input }}"
+            src: "/dev/{{ lv_input.user_input }}"
+            fstype: ext4
+            state: mounted
+      when: operation == "2"
+      
+    - name: Create new LV
+      block:
+        - name: Get details
+          pause:
+            prompt: "VG Name"
+          register: vg_in
+        - pause:
+            prompt: "New LV Name"
+          register: lv_name_in
+        - pause:
+            prompt: "Size (e.g. 10G)"
+          register: lv_size_in
+          
+        - name: Create LV
+          lvol:
+            vg: "{{ vg_in.user_input }}"
+            lv: "{{ lv_name_in.user_input }}"
+            size: "{{ lv_size_in.user_input }}"
+            
+        - name: Format
+          filesystem:
+            fstype: ext4
+            dev: "/dev/{{ vg_in.user_input }}/{{ lv_name_in.user_input }}"
+            
+        - name: Mount
+          mount:
+            path: "/mnt/{{ lv_name_in.user_input }}"
+            src: "/dev/{{ vg_in.user_input }}/{{ lv_name_in.user_input }}"
+            fstype: ext4
+            state: mounted
+      when: operation == "3"

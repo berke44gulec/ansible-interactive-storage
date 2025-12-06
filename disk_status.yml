@@ -1,0 +1,22 @@
+---
+- name: Disk Status Check
+  hosts: localhost
+  become: yes
+  tasks:
+    - name: Show disk status
+      shell: |
+        echo "=== DISKS ==="
+        lsblk -f
+        echo ""
+        echo "=== USAGE ==="
+        df -h
+        echo ""
+        echo "=== LVM INFO ==="
+        vgs
+        lvs
+      register: disk_info
+      changed_when: false
+      
+    - name: Display results
+      debug:
+        msg: "{{ disk_info.stdout_lines }}"
